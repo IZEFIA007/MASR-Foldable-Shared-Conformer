@@ -1,0 +1,123 @@
+# ============================
+# 编码器
+# ============================
+encoder_conf:
+  encoder_name: 'FoldableConformerEncoder'
+  encoder_args:
+    input_size: 80
+    output_size: 256
+    attention_heads: 4
+    linear_units: 2048
+
+    num_physical_layers: 6       # 物理层，真正存在的参数层数
+    max_logical_depth: 12        # 最大逻辑深度（结构展开上限）
+
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    attention_dropout_rate: 0.1
+
+    input_layer: 'conv2d'
+    pos_enc_layer_type: 'rel_pos'
+    normalize_before: True
+    activation_type: 'swish'
+    cnn_module_kernel: 15
+    use_cnn_module: True
+
+# ============================
+# 解码器
+# ============================
+decoder_conf:
+  decoder_name: 'BiTransformerDecoder'
+  decoder_args:
+    attention_heads: 4
+    linear_units: 1024
+    num_blocks: 3
+    r_num_blocks: 3
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    self_attention_dropout_rate: 0.1
+    src_attention_dropout_rate: 0.1
+
+# ============================
+# 模型
+# ============================
+model_conf:
+  model: 'FoldableConformerModel'
+  model_args:
+    streaming: False
+    ctc_weight: 0.3
+    lsm_weight: 0.1
+    reverse_weight: 0.3
+    length_normalized_loss: false
+
+    alpha_p: 0.25
+    logical_depth: 12
+
+    kd_alpha: 0.1
+    kd_temperature: 2.0
+
+# ============================
+# 数据集
+# ============================
+dataset_conf:
+  dataset:
+    min_duration: 0.5
+    max_duration: 20
+    sample_rate: 16000
+    use_dB_normalization: True
+    target_dB: -20
+    manifest_type: 'txt'
+  batch_sampler:
+    batch_size: 8
+    sortagrad: True
+    drop_last: True
+    shuffle: True
+  dataLoader:
+    num_workers: 4
+  train_manifest: 'datasetpr2\train.jsonl'
+  test_manifest: 'datasetpr2\test.jsonl'
+  eval_manifest: 'datasetpr2\eval.jsonl'
+  mean_istd_path: 'datasetpr2\mean_istd.json'
+
+# ============================
+# 预处理
+# ============================
+preprocess_conf:
+  feature_method: 'fbank'
+  method_args:
+    num_mel_bins: 80
+
+# ============================
+# 词表
+# ============================
+tokenizer_conf:
+  vocab_model_dir: "datasetpr2/vocab_model/"
+  model_type: 'char'
+  build_vocab_size: 5000
+  non_linguistic_symbols: []
+  remove_non_linguistic_symbols: False
+
+# ============================
+# 优化器
+# ============================
+optimizer_conf:
+  optimizer: 'Adam'
+  optimizer_args:
+    lr: 0.0001
+    weight_decay: !!float 1.e-6
+  scheduler: 'WarmupLR'
+  scheduler_args:
+    warmup_steps: 25000
+    min_lr: 1.e-5
+
+# ============================
+# 训练参数
+# ============================
+train_conf:
+  enable_amp: False
+  use_compile: False
+  grad_clip: 5.0
+  accum_grad: 3
+  max_epoch: 50
+  log_interval: 100
+  joint_training: true

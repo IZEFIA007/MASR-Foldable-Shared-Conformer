@@ -1,0 +1,105 @@
+# Foldable Conformer with selective FFN sharing and effective KL weight 0.1.
+# The model already adds kd_alpha * loss_kd to its total loss, so the trainer's
+# historical extra raw-KL addition is disabled for this experiment.
+
+encoder_conf:
+  encoder_name: 'FoldableConformerEncoder'
+  encoder_args:
+    input_size: 80
+    output_size: 256
+    attention_heads: 4
+    linear_units: 2048
+
+    num_physical_layers: 6
+    max_logical_depth: 12
+    separate_macaron_ffn: True
+
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    attention_dropout_rate: 0.1
+
+    input_layer: 'conv2d'
+    pos_enc_layer_type: 'rel_pos'
+    normalize_before: True
+    activation_type: 'swish'
+    cnn_module_kernel: 15
+    use_cnn_module: True
+
+decoder_conf:
+  decoder_name: 'BiTransformerDecoder'
+  decoder_args:
+    attention_heads: 4
+    linear_units: 1024
+    num_blocks: 3
+    r_num_blocks: 3
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    self_attention_dropout_rate: 0.1
+    src_attention_dropout_rate: 0.1
+
+model_conf:
+  model: 'FoldableSplitSharedConformerModel'
+  model_args:
+    streaming: False
+    ctc_weight: 0.3
+    lsm_weight: 0.1
+    reverse_weight: 0.3
+    length_normalized_loss: false
+
+    alpha_p: 0.25
+    logical_depth: 12
+
+    kd_alpha: 0.1
+    kd_temperature: 2.0
+
+dataset_conf:
+  dataset:
+    min_duration: 0.5
+    max_duration: 20
+    sample_rate: 16000
+    use_dB_normalization: True
+    target_dB: -20
+    manifest_type: 'txt'
+  batch_sampler:
+    batch_size: 8
+    sortagrad: True
+    drop_last: True
+    shuffle: True
+  dataLoader:
+    num_workers: 4
+  train_manifest: 'dataset1\train.jsonl'
+  test_manifest: 'dataset1\test.jsonl'
+  eval_manifest: 'dataset1\eval.jsonl'
+  mean_istd_path: 'dataset1\mean_istd.json'
+
+preprocess_conf:
+  feature_method: 'fbank'
+  method_args:
+    num_mel_bins: 80
+
+tokenizer_conf:
+  vocab_model_dir: "dataset1/vocab_model/"
+  model_type: 'char'
+  build_vocab_size: 5000
+  non_linguistic_symbols: []
+  remove_non_linguistic_symbols: False
+
+optimizer_conf:
+  optimizer: 'Adam'
+  optimizer_args:
+    lr: 0.0005
+    weight_decay: !!float 1.e-6
+  scheduler: 'WarmupLR'
+  scheduler_args:
+    warmup_steps: 25000
+    min_lr: 1.e-5
+
+train_conf:
+  enable_amp: False
+  use_compile: False
+  grad_clip: 5.0
+  accum_grad: 4
+  max_epoch: 50
+  log_interval: 100
+  joint_training: true
+  add_raw_kd_in_trainer: false
