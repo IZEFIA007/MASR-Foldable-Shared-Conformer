@@ -41,7 +41,7 @@ def create_manifest(annotation_path,
                     test_manifest_path,
                     eval_manifest_path,
                     max_test_manifest=10000):
-    """创建数据列表
+    """Create train/dev/test manifests without changing the dataset split.
 
     :param annotation_path: 标注列表文件夹路径
     :type annotation_path: str
@@ -51,21 +51,55 @@ def create_manifest(annotation_path,
     :type test_manifest_path: str
     :param eval_manifest_path: 验证数据列表路径
     :type eval_manifest_path: str
-    :param max_test_manifest: 测试数据列表最大数量
+    :param max_test_manifest: Deprecated compatibility argument. Official splits are never resampled.
     :type max_test_manifest: int
     """
-    data_list = []
+    del max_test_manifest
+    train_list = []
     test_list = []
     eval_list = []
     durations = []
 
-    for annotation_text in os.listdir(annotation_path):
+    split_aliases = {
+        'train': 'train',
+        'dev': 'eval',
+        'eval': 'eval',
+        'valid': 'eval',
+        'validation': 'eval',
+        'test': 'test',
+    }
+
+    def get_split(filename):
+        stem = os.path.splitext(filename)[0].lower().replace('-', '_')
+        for prefix, split in split_aliases.items():
+            if stem == prefix or stem.startswith(f'{prefix}_'):
+                return split
+        return None
+
+    def append_item(split, item):
+        if split == 'train':
+            train_list.append(item)
+        elif split == 'eval':
+            eval_list.append(item)
+        else:
+            test_list.append(item)
+
+    for annotation_text in sorted(os.listdir(annotation_path)):
         annotation_text_path = os.path.join(annotation_path, annotation_text)
+        if not os.path.isfile(annotation_text_path):
+            continue
+        extension = os.path.splitext(annotation_text_path)[-1].lower()
+        if extension not in {'.json', '.jsonl', '.txt'}:
+            continue
+        split = get_split(annotation_text)
+        if split is None:
+            logger.warning(f'无法从文件名判断数据划分，已跳过：{annotation_text}')
+            continue
 
         # ----------------------------
         # 处理 JSON 标注
         # ----------------------------
-        if os.path.splitext(annotation_text_path)[-1] == '.json':
+        if extension in {'.json', '.jsonl'}:
             with open(annotation_text_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             for line in tqdm(lines):
@@ -76,29 +110,21 @@ def create_manifest(annotation_path,
                     continue
 
                 audio_path, text = d["audio_filepath"], d["text"]
-                start_time, end_time, duration = d["start_time"], d["end_time"], d["duration"]
+                duration = d["duration"]
                 durations.append(duration)
                 text = text.lower().strip()
                 if len(text) == 0: continue
                 text = convert(text, 'zh-cn')
 
-                line = dict(
+                item = dict(
                     audio_filepath=audio_path.replace('\\', '/'),
                     text=text,
-                    duration=duration,
-                    start_time=start_time,
-                    end_time=end_time
+                    duration=duration
                 )
-
-                # ---------------------------
-                # test.json / eval.json 判断
-                # ---------------------------
-                if annotation_text == 'test.json':
-                    test_list.append(line)
-                elif annotation_text == 'eval.json':
-                    eval_list.append(line)
-                else:
-                    data_list.append(line)
+                if 'start_time' in d and 'end_time' in d:
+                    item['start_time'] = d['start_time']
+                    item['end_time'] = d['end_time']
+                append_item(split, item)
 
         # ----------------------------
         # 处理 txt 标注
@@ -109,83 +135,59 @@ def create_manifest(annotation_path,
 
             for line in tqdm(lines):
                 try:
-                    audio_path, text = line.strip().split('\t')
+                    parts = line.strip().split('\t')
+                    if len(parts) not in {2, 3}:
+                        raise ValueError('TXT标注必须是 audio_path<TAB>text[<TAB>duration]')
+                    audio_path, text = parts[:2]
+                    duration = float(parts[2]) if len(parts) == 3 else None
                 except Exception as e:
                     logger.warning(f'{line} 错误，已跳过，错误信息：{e}')
                     continue
 
-                audio_segment = AudioSegment.from_file(audio_path)
-                duration = audio_segment.duration
+                if duration is None:
+                    audio_segment = AudioSegment.from_file(audio_path)
+                    duration = audio_segment.duration
                 durations.append(duration)
 
                 text = text.lower().strip()
                 if len(text) == 0 or text == ' ': continue
                 text = convert(text, 'zh-cn')
 
-                line = dict(
+                item = dict(
                     audio_filepath=audio_path.replace('\\', '/'),
                     text=text,
                     duration=duration
                 )
-
-                # ---------------------------
-                # test.txt / eval.txt 判断
-                # ---------------------------
-                if annotation_text == 'test.txt':
-                    test_list.append(line)
-                elif annotation_text == 'eval.txt':
-                    eval_list.append(line)
-                else:
-                    data_list.append(line)
+                append_item(split, item)
 
     # ----------------------------
     # 排序
     # ----------------------------
-    data_list.sort(key=lambda x: x["duration"], reverse=False)
-
-    if len(test_list) > 0:
-        test_list.sort(key=lambda x: x["duration"], reverse=False)
-
-    if len(eval_list) > 0:
-        eval_list.sort(key=lambda x: x["duration"], reverse=False)
+    split_lists = {'train': train_list, 'eval/dev': eval_list, 'test': test_list}
+    missing = [name for name, items in split_lists.items() if not items]
+    if missing:
+        raise ValueError(f'缺少非空数据划分：{", ".join(missing)}。请提供 train、dev/eval/valid 和 test 标注文件。')
+    for items in split_lists.values():
+        items.sort(key=lambda x: x["duration"], reverse=False)
 
     # ----------------------------
     # 写入文件
     # ----------------------------
-    f_train = open(train_manifest_path, 'w', encoding='utf-8')
-    f_test = open(test_manifest_path, 'w', encoding='utf-8')
-    f_eval = open(eval_manifest_path, 'w', encoding='utf-8')
+    outputs = {
+        train_manifest_path: train_list,
+        eval_manifest_path: eval_list,
+        test_manifest_path: test_list,
+    }
+    for manifest_path, items in outputs.items():
+        parent = os.path.dirname(manifest_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(manifest_path, 'w', encoding='utf-8') as manifest_file:
+            for item in items:
+                manifest_file.write(json.dumps(item, ensure_ascii=False) + '\n')
 
-    # 写 test
-    for line in test_list:
-        line = json.dumps(line, ensure_ascii=False)
-        f_test.write(f"{line}\n")
-
-    # 写 eval
-    for line in eval_list:
-        line = json.dumps(line, ensure_ascii=False)
-        f_eval.write(f"{line}\n")
-
-    # 训练集+自动抽 test
-    interval = 500
-    if len(data_list) / 500 > max_test_manifest:
-        interval = len(data_list) // max_test_manifest
-
-    for i, line in enumerate(data_list):
-        line = json.dumps(line, ensure_ascii=False)
-        if i % interval == 0:
-            if len(test_list) == 0:
-                f_test.write(f"{line}\n")
-            else:
-                f_train.write(f"{line}\n")
-        else:
-            f_train.write(f"{line}\n")
-
-    f_train.close()
-    f_test.close()
-    f_eval.close()
-
-    logger.info("完成生成数据列表，数据集总长度为{:.2f}小时！".format(sum(durations) / 3600.))
+    logger.info(f'完成生成数据列表：train={len(train_list)}, eval/dev={len(eval_list)}, '
+                f'test={len(test_list)}，总长度={sum(durations) / 3600.:.2f}小时')
 
 
 
@@ -255,15 +257,16 @@ def merge_audio(annotation_path, save_audio_path, max_duration=600, target_sr=16
     f_ann.close()
 
 
-def create_manifest_binary(train_manifest_path, test_manifest_path):
+def create_manifest_binary(train_manifest_path, eval_manifest_path, test_manifest_path):
     """生成数据列表的二进制文件
 
     :param train_manifest_path: 训练列表的路径
     :type train_manifest_path: str
+    :param eval_manifest_path: 验证列表的路径
     :param test_manifest_path: 测试列表的路径
     :type test_manifest_path: str
     """
-    for manifest_path in [train_manifest_path, test_manifest_path]:
+    for manifest_path in [train_manifest_path, eval_manifest_path, test_manifest_path]:
         dataset_writer = DatasetWriter(manifest_path)
         with open(manifest_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()

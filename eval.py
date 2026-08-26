@@ -13,6 +13,7 @@ add_arg('metrics_type',      str,   'cer',                         "评估指标
 add_arg('decoder',           str,   'ctc_greedy_search',           "解码器，支持 ctc_greedy_search、ctc_prefix_beam_search、attention_rescoring、ctc_beam_search")
 add_arg('decoder_configs',   str,   'configs/decoder.yml',         "解码器配置参数文件路径")
 add_arg("max_text_duration", int,   50,                            "测试过滤的最大音频时长，如果不指定，则使用配置文件里面的max_duration")
+add_arg('split',              str,   'eval',                        "评估划分：eval使用开发/验证集，test使用最终测试集")
 add_arg('resume_model',      str,   'models/foldable_split_ffn_kl01/FoldableSplitSharedConformerModel_fbank/best_model/', "模型的路径")
 add_arg('overwrites',        str,   None,                          '覆盖配置文件中的参数，比如"train_conf.max_epoch=100"，多个用逗号隔开')
 args = parser.parse_args()
@@ -31,6 +32,7 @@ trainer = MASRTrainer(configs=args.configs,
 start = time.time()
 loss, error_result = trainer.evaluate(resume_model=args.resume_model,
                                       display_result=True,
-                                      max_text_duration=args.max_text_duration)
+                                      max_text_duration=args.max_text_duration,
+                                      split=args.split)
 end = time.time()
 print('评估消耗时间：{}s，错误率：{:.5f}'.format(int(end - start), error_result))

@@ -124,6 +124,7 @@ class MASRTrainer(object):
         self.train_loader = None
         self.test_dataset = None
         self.test_loader = None
+        self.loaded_eval_split = None
         self.amp_scaler = None
         self.beam_search_decoder = None
         if platform.system().lower() == 'windows':
@@ -136,7 +137,7 @@ class MASRTrainer(object):
         self.test_log_step, self.train_log_step = 0, 0
         self.stop_train, self.stop_eval = False, False
 
-    def __setup_dataloader(self, is_train=False, max_text_duration=None):
+    def __setup_dataloader(self, is_train=False, max_text_duration=None, eval_split='eval'):
         """ 获取数据加载器
 
         :param is_train: 是否获取训练数据
@@ -173,10 +174,14 @@ class MASRTrainer(object):
                                            collate_fn=collate_fn,
                                            batch_sampler=self.train_batch_sampler,
                                            **data_loader_args)
-        # 获取测试数据
+        if eval_split not in {'eval', 'test'}:
+            raise ValueError("eval_split must be 'eval' or 'test'")
+        manifest_path = (self.configs.dataset_conf.eval_manifest
+                         if eval_split == 'eval' else self.configs.dataset_conf.test_manifest)
+        # Training uses eval/dev; standalone evaluation can explicitly select test.
         if max_text_duration is not None:
             dataset_args.max_duration = max_text_duration
-        self.test_dataset = MASRDataset(data_manifest=self.configs.dataset_conf.eval_manifest,
+        self.test_dataset = MASRDataset(data_manifest=manifest_path,
                                         audio_featurizer=self.audio_featurizer,
                                         tokenizer=self.tokenizer,
                                         mode='eval',
@@ -186,6 +191,7 @@ class MASRTrainer(object):
                                       collate_fn=collate_fn,
                                       shuffle=False,
                                       **data_loader_args)
+        self.loaded_eval_split = eval_split
 
     def extract_features(self, save_dir='dataset/features', max_duration=100):
         """ 提取特征保存文件
@@ -203,7 +209,9 @@ class MASRTrainer(object):
         dataset_args.max_duration = max_duration
         data_loader_args = self.configs.dataset_conf.get('dataLoader', {})
         # 读取训练数据列表和测试数据列表
-        for data_list_file in [self.configs.dataset_conf.train_manifest, self.configs.dataset_conf.eval_manifest]:
+        for data_list_file in [self.configs.dataset_conf.train_manifest,
+                               self.configs.dataset_conf.eval_manifest,
+                               self.configs.dataset_conf.test_manifest]:
             save_dir1 = os.path.join(save_dir, data_list_file.split('.')[-1])
             os.makedirs(save_dir1, exist_ok=True)
             test_dataset = MASRDataset(data_manifest=data_list_file,
@@ -588,61 +596,16 @@ class MASRTrainer(object):
         logger.info('=' * 70)
         logger.info('开始生成数据字典...')
         tokenizer = MASRTokenizer(is_build_vocab=True, **self.configs.tokenizer_conf)
-        tokenizer.build_vocab(manifest_paths=[
-            self.configs.dataset_conf.train_manifest,
-            self.configs.dataset_conf.test_manifest
-        ])
+        tokenizer.build_vocab(manifest_paths=[self.configs.dataset_conf.train_manifest])
         logger.info('数据字典生成完成！')
 
         if self.configs.dataset_conf.dataset.manifest_type == 'binary':
             logger.info('=' * 70)
             logger.info('正在生成数据列表的二进制文件...')
             create_manifest_binary(train_manifest_path=self.configs.dataset_conf.train_manifest,
+                                   eval_manifest_path=self.configs.dataset_conf.eval_manifest,
                                    test_manifest_path=self.configs.dataset_conf.test_manifest)
             logger.info('数据列表的二进制文件生成完成！')
-
-        # ========== 按 train.txt / test.txt / eval.txt 生成对应 jsonl ==========
-        base_dir = os.path.dirname(self.configs.dataset_conf.train_manifest)
-        train_json = os.path.join(base_dir, "train.json")
-        test_json = os.path.join(base_dir, "test.json")
-        eval_json = os.path.join(base_dir, "eval.json")
-
-        def write_json(txt_path, json_path):
-            import soundfile as sf
-
-            # audio 根目录，用于拼接绝对路径
-            base_audio_dir = os.path.join(os.path.dirname(annotation_path), "audio", "wav")
-
-            with open(txt_path, 'r', encoding='utf-8') as f, \
-                    open(json_path, 'w', encoding='utf-8') as jf:
-                for line in f:
-                    parts = line.strip().split("\t")
-                    if len(parts) < 2:
-                        continue
-                    audio_rel, text = parts[0], parts[1]
-
-                    audio_abs = os.path.join(base_audio_dir, audio_rel.replace("/", os.sep))
-
-                    try:
-                        audio_data, sr = sf.read(audio_abs)
-                        duration = len(audio_data) / sr
-                    except Exception as e:
-                        print(f"读取音频失败: {audio_abs}, 错误: {e}")
-                        duration = 0.0
-
-                    jf.write(json.dumps({
-                        "audio_filepath": audio_rel,  # 保持 txt 里的相对路径
-                        "text": text,
-                        "duration": duration
-                    }, ensure_ascii=False) + "\n")
-
-        write_json(os.path.join(annotation_path, "train.txt"), train_json)
-        write_json(os.path.join(annotation_path, "test.txt"), test_json)
-        write_json(os.path.join(annotation_path, "eval.txt"), eval_json)
-
-        logger.info(f"train.json 生成完成：{train_json}")
-        logger.info(f"test.json  生成完成：{test_json}")
-        logger.info(f"eval.json  生成完成：{eval_json}")
 
     def train(self,
               save_model_path='models/',
@@ -719,13 +682,13 @@ class MASRTrainer(object):
                 logger.info('=' * 70)
                 self.eval_loss, self.eval_error_result = self.evaluate()
                 logger.info(
-                    f'Test epoch: {epoch_id}, time/epoch: {str(timedelta(seconds=(time.time() - start_epoch)))}, '
+                    f'Eval epoch: {epoch_id}, time/epoch: {str(timedelta(seconds=(time.time() - start_epoch)))}, '
                     f'loss: {self.eval_loss:.5f}, {self.metrics_type}: {self.eval_error_result:.5f}, '
                     f'best {self.metrics_type}: '
                     f'{self.eval_error_result if self.eval_error_result <= self.eval_best_error_rate else self.eval_best_error_rate:.5f}')
                 logger.info('=' * 70)
-                writer.add_scalar(f'Test/{self.metrics_type}', self.eval_error_result, self.test_log_step)
-                writer.add_scalar('Test/Loss', self.eval_loss, self.test_log_step)
+                writer.add_scalar(f'Eval/{self.metrics_type}', self.eval_error_result, self.test_log_step)
+                writer.add_scalar('Eval/Loss', self.eval_loss, self.test_log_step)
                 self.test_log_step += 1
                 self.model.train()
                 # 保存最优模型
@@ -741,7 +704,7 @@ class MASRTrainer(object):
                                 error_rate=self.eval_error_result, metrics_type=self.metrics_type)
 
     def evaluate(self, resume_model=None, display_result=False,
-                 max_text_duration=None, only_ctc_probs=False):
+                 max_text_duration=None, only_ctc_probs=False, split='eval'):
         """评估模型，并自动检测 NaN
 
         :param resume_model: 所使用的模型
@@ -752,10 +715,12 @@ class MASRTrainer(object):
         :type max_text_duration: int
         :param only_ctc_probs: 是否只返回CTC概率，否则返回解码结果
         :type only_ctc_probs: bool
+        :param split: 评估划分，可选eval或test
+        :type split: str
         :return: 评估结果
         """
-        if self.test_loader is None:
-            self.__setup_dataloader(max_text_duration=max_text_duration)
+        if self.test_loader is None or self.loaded_eval_split != split:
+            self.__setup_dataloader(max_text_duration=max_text_duration, eval_split=split)
 
         if self.model is None:
             self.__setup_model(input_dim=self.audio_featurizer.feature_dim,

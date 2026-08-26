@@ -13,6 +13,8 @@ foldable and parameter-sharing models used in this project.
 - The Macaron pre-FFN and post-convolution FFN can use separate parameter sets.
 - Relative positional encoding is retained in the final shared models.
 - The KL term can be controlled without adding the raw KL loss twice in the trainer.
+- Dataset preparation preserves the official train/development/test split instead
+  of reusing the test set for per-epoch validation.
 
 ## Included models
 
@@ -34,8 +36,35 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Prepare the dataset manifests, vocabulary, and CMVN statistics with
-`create_data.py`, then update the dataset paths in the selected YAML file.
+## Dataset preparation
+
+Place one annotation file for each official split in the annotation directory:
+
+```text
+annotation/
+  train.txt
+  dev.txt
+  test.txt
+```
+
+`eval.txt`, `valid.txt`, and `validation.txt` are accepted aliases for
+`dev.txt`; `.json` and `.jsonl` files are also supported. TXT lines can be
+either `audio_path<TAB>text` or `audio_path<TAB>text<TAB>duration`. JSON/JSONL
+records require `audio_filepath`, `text`, and `duration`; segmented records may
+also contain `start_time` and `end_time`.
+
+Run:
+
+```bash
+python create_data.py \
+  --configs=configs/conformerfusion_split_ffn_kl01.yml \
+  --annotation_path=dataset/annotation
+```
+
+The command writes separate train, eval/dev, and test manifests according to
+the YAML paths. All three splits must be present and non-empty. CMVN statistics
+and the vocabulary are built from the training split only; development and
+test transcripts are not used to construct the vocabulary.
 
 ## Switching models
 
@@ -75,6 +104,18 @@ configuration from the table.
 python eval.py \
   --configs=configs/conformerfusion_split_ffn_kl01.yml \
   --resume_model=models/foldable_split_ffn_kl01/FoldableSplitSharedConformerModel_fbank/best_model \
+  --split=eval \
+  --decoder=ctc_greedy_search
+```
+
+Training and checkpoint selection always use `eval_manifest`. Use
+`--split=test` only for the final held-out evaluation:
+
+```bash
+python eval.py \
+  --configs=configs/conformerfusion_split_ffn_kl01.yml \
+  --resume_model=models/foldable_split_ffn_kl01/FoldableSplitSharedConformerModel_fbank/best_model \
+  --split=test \
   --decoder=ctc_greedy_search
 ```
 
